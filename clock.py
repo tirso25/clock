@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-Clock App - Reloj digital para terminal con cronómetro y Pomodoro
+Clock App - Reloj digital para terminal con cronómetro, Pomodoro y Calendario
 Controles:
   1 - Modo Reloj
   2 - Modo Cronómetro
   3 - Modo Pomodoro
+  4 - Modo Calendario
   Espacio - Iniciar/Pausar (Cronómetro/Pomodoro)
   r - Reiniciar (Cronómetro/Pomodoro)
   s - Configurar tiempos (Pomodoro)
+  ←/→ - Mes anterior/siguiente (Calendario)
+  t - Ir a hoy (Calendario)
   q - Salir
 """
 
@@ -19,6 +22,7 @@ from textual.binding import Binding
 from textual import on
 from typing import Optional
 from datetime import datetime, timedelta
+import calendar
 import asyncio
 
 
@@ -103,6 +107,15 @@ ASCII_DIGITS = {
     ],
 }
 
+# Nombres de meses en español
+MESES = [
+    "", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
+]
+
+# Días de la semana en español (abreviados)
+DIAS_SEMANA = ["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"]
+
 
 def time_to_ascii(time_str: str) -> str:
     """Convierte una cadena de tiempo (HH:MM:SS) a ASCII art."""
@@ -111,6 +124,44 @@ def time_to_ascii(time_str: str) -> str:
         if char in ASCII_DIGITS:
             for i, line in enumerate(ASCII_DIGITS[char]):
                 lines[i] += line + " "
+    return "\n".join(lines)
+
+
+def generate_calendar(year: int, month: int, today: datetime) -> str:
+    """Genera un calendario mensual en formato texto."""
+    cal = calendar.Calendar(firstweekday=0)  # Lunes = 0
+    
+    # Cabecera con mes y año
+    header = f"         {MESES[month]} {year}         "
+    
+    # Días de la semana
+    days_header = "  ".join(DIAS_SEMANA)
+    
+    # Generar las semanas
+    weeks = []
+    for week in cal.monthdayscalendar(year, month):
+        week_str = ""
+        for i, day in enumerate(week):
+            if day == 0:
+                week_str += "    "
+            else:
+                # Resaltar el día actual
+                if year == today.year and month == today.month and day == today.day:
+                    week_str += f"[bold cyan][{day:2d}][/bold cyan]"
+                else:
+                    week_str += f" {day:2d} "
+        weeks.append(week_str)
+    
+    # Construir calendario completo
+    lines = [
+        "",
+        header,
+        "─" * len(header),
+        days_header,
+        "─" * len(days_header),
+    ]
+    lines.extend(weeks)
+    
     return "\n".join(lines)
 
 
@@ -223,6 +274,53 @@ class ClockDisplay(Static):
         self.update(time_to_ascii(time_str))
 
 
+class CalendarDisplay(Static):
+    """Widget para mostrar el calendario."""
+    
+    DEFAULT_CSS = """
+    CalendarDisplay {
+        width: 100%;
+        height: auto;
+        content-align: center middle;
+        text-align: center;
+        padding: 1;
+    }
+    """
+    
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        now = datetime.now()
+        self.current_year = now.year
+        self.current_month = now.month
+    
+    def update_calendar(self) -> None:
+        today = datetime.now()
+        cal_text = generate_calendar(self.current_year, self.current_month, today)
+        self.update(cal_text)
+    
+    def next_month(self) -> None:
+        if self.current_month == 12:
+            self.current_month = 1
+            self.current_year += 1
+        else:
+            self.current_month += 1
+        self.update_calendar()
+    
+    def prev_month(self) -> None:
+        if self.current_month == 1:
+            self.current_month = 12
+            self.current_year -= 1
+        else:
+            self.current_month -= 1
+        self.update_calendar()
+    
+    def go_to_today(self) -> None:
+        now = datetime.now()
+        self.current_year = now.year
+        self.current_month = now.month
+        self.update_calendar()
+
+
 class ModeTab(Static):
     """Widget para una pestaña de modo."""
     
@@ -294,6 +392,18 @@ class ClockApp(App):
         padding: 2;
     }
     
+    #calendar-container {
+        width: 100%;
+        height: auto;
+        align: center middle;
+        padding: 1;
+        display: none;
+    }
+    
+    #calendar-container.visible {
+        display: block;
+    }
+    
     #status {
         width: 100%;
         height: auto;
@@ -334,15 +444,30 @@ class ClockApp(App):
         color: $text;
         padding: 0 2;
     }
+    
+    #calendar-nav {
+        width: 100%;
+        height: auto;
+        align: center middle;
+        padding: 1;
+    }
+    
+    #calendar-nav Button {
+        margin: 0 2;
+    }
     """
     
     BINDINGS = [
         Binding("1", "mode_clock", "Reloj"),
         Binding("2", "mode_stopwatch", "Cronómetro"),
         Binding("3", "mode_pomodoro", "Pomodoro"),
+        Binding("4", "mode_calendar", "Calendario"),
         Binding("space", "toggle_start", "Iniciar/Pausar"),
         Binding("r", "reset", "Reiniciar"),
         Binding("s", "settings", "Configurar"),
+        Binding("left", "prev_month", "Mes anterior", show=False),
+        Binding("right", "next_month", "Mes siguiente", show=False),
+        Binding("t", "go_today", "Ir a hoy", show=False),
         Binding("q", "quit", "Salir"),
     ]
     
@@ -350,7 +475,7 @@ class ClockApp(App):
     
     def __init__(self) -> None:
         super().__init__()
-        self.mode = "clock"  # clock, stopwatch, pomodoro
+        self.mode = "clock"  # clock, stopwatch, pomodoro, calendar
         
         # Cronómetro
         self.stopwatch_running = False
@@ -372,6 +497,7 @@ class ClockApp(App):
             yield Horizontal(id="tabs-container")
             yield Static("", id="date-display")
             yield Container(id="clock-container")
+            yield Container(id="calendar-container")
             yield Static("", id="status")
             yield Static("", id="pomodoro-status")
         yield Static("", id="info-bar")
@@ -384,6 +510,11 @@ class ClockApp(App):
         clock_container = self.query_one("#clock-container", Container)
         self.clock_display = ClockDisplay(id="clock-display")
         await clock_container.mount(self.clock_display)
+        
+        # Crear el display del calendario
+        calendar_container = self.query_one("#calendar-container", Container)
+        self.calendar_display = CalendarDisplay(id="calendar-display")
+        await calendar_container.mount(self.calendar_display)
         
         # Iniciar el timer de actualización
         self.set_interval(0.1, self.update_display)
@@ -399,6 +530,7 @@ class ClockApp(App):
             ("clock", "🕐 Reloj"),
             ("stopwatch", "⏱️  Cronómetro"),
             ("pomodoro", "🍅 Pomodoro"),
+            ("calendar", "📅 Calendario"),
         ]
         
         for mode_id, name in modes:
@@ -408,12 +540,27 @@ class ClockApp(App):
     
     def update_display(self) -> None:
         """Actualiza el display según el modo actual."""
+        # Mostrar/ocultar contenedores según el modo
+        clock_container = self.query_one("#clock-container", Container)
+        calendar_container = self.query_one("#calendar-container", Container)
+        
+        if self.mode == "calendar":
+            clock_container.styles.display = "none"
+            calendar_container.add_class("visible")
+            calendar_container.styles.display = "block"
+        else:
+            clock_container.styles.display = "block"
+            calendar_container.remove_class("visible")
+            calendar_container.styles.display = "none"
+        
         if self.mode == "clock":
             self.update_clock()
         elif self.mode == "stopwatch":
             self.update_stopwatch()
         elif self.mode == "pomodoro":
             self.update_pomodoro()
+        elif self.mode == "calendar":
+            self.update_calendar_view()
     
     def update_clock(self) -> None:
         """Actualiza el reloj."""
@@ -509,6 +656,21 @@ class ClockApp(App):
         else:
             pomodoro_status.update("[bold yellow]☕ DESCANSO[/bold yellow]")
     
+    def update_calendar_view(self) -> None:
+        """Actualiza la vista del calendario."""
+        self.calendar_display.update_calendar()
+        
+        # Actualizar cabecera
+        date_display = self.query_one("#date-display", Static)
+        date_display.update("📅 Calendario")
+        
+        # Mostrar navegación en status
+        status = self.query_one("#status", Static)
+        status.update("← → Navegar meses | t Ir a hoy")
+        
+        pomodoro_status = self.query_one("#pomodoro-status", Static)
+        pomodoro_status.update("")
+    
     def notify_pomodoro_change(self) -> None:
         """Notifica el cambio de modo en Pomodoro."""
         if self.pomodoro_is_focus:
@@ -521,11 +683,13 @@ class ClockApp(App):
         info_bar = self.query_one("#info-bar", Static)
         
         if self.mode == "clock":
-            info_bar.update("1-3: Cambiar modo | q: Salir")
+            info_bar.update("1-4: Cambiar modo | q: Salir")
         elif self.mode == "stopwatch":
-            info_bar.update("Espacio: Iniciar/Pausar | r: Reiniciar | 1-3: Cambiar modo | q: Salir")
+            info_bar.update("Espacio: Iniciar/Pausar | r: Reiniciar | 1-4: Cambiar modo | q: Salir")
         elif self.mode == "pomodoro":
             info_bar.update(f"Focus: {self.pomodoro_focus_time}min | Descanso: {self.pomodoro_break_time}min | Espacio: Iniciar/Pausar | r: Reiniciar | s: Config | q: Salir")
+        elif self.mode == "calendar":
+            info_bar.update("←/→: Cambiar mes | t: Ir a hoy | 1-4: Cambiar modo | q: Salir")
     
     # Acciones de modo
     async def action_mode_clock(self) -> None:
@@ -543,6 +707,12 @@ class ClockApp(App):
     async def action_mode_pomodoro(self) -> None:
         """Cambia al modo pomodoro."""
         self.mode = "pomodoro"
+        await self.refresh_tabs()
+        self.update_info_bar()
+    
+    async def action_mode_calendar(self) -> None:
+        """Cambia al modo calendario."""
+        self.mode = "calendar"
         await self.refresh_tabs()
         self.update_info_bar()
     
@@ -605,6 +775,22 @@ class ClockApp(App):
                 ConfigModal(self.pomodoro_focus_time, self.pomodoro_break_time),
                 on_result
             )
+    
+    # Acciones de calendario
+    def action_prev_month(self) -> None:
+        """Ir al mes anterior."""
+        if self.mode == "calendar":
+            self.calendar_display.prev_month()
+    
+    def action_next_month(self) -> None:
+        """Ir al mes siguiente."""
+        if self.mode == "calendar":
+            self.calendar_display.next_month()
+    
+    def action_go_today(self) -> None:
+        """Ir al mes actual."""
+        if self.mode == "calendar":
+            self.calendar_display.go_to_today()
 
 
 def main():
