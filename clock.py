@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-Clock App - Reloj digital para terminal con cronómetro, Pomodoro y Calendario
+Clock App - Reloj digital para terminal con cronómetro, Pomodoro, Temporizador y Calendario
 Controles:
   1 - Modo Reloj
   2 - Modo Cronómetro
   3 - Modo Pomodoro
-  4 - Modo Calendario
-  Espacio - Iniciar/Pausar (Cronómetro/Pomodoro)
-  r - Reiniciar (Cronómetro/Pomodoro)
-  s - Configurar tiempos (Pomodoro)
+  4 - Modo Temporizador
+  5 - Modo Calendario
+  Espacio - Iniciar/Pausar (Cronómetro/Pomodoro/Temporizador)
+  r - Reiniciar (Cronómetro/Pomodoro/Temporizador)
+  s - Configurar tiempos (Pomodoro/Temporizador)
   ←/→ - Mes anterior/siguiente (Calendario)
   t - Ir a hoy (Calendario)
   q - Salir
@@ -251,6 +252,90 @@ class ConfigModal(ModalScreen[Optional[tuple[int, int]]]):
     def action_cancel(self) -> None:
         self.dismiss(None)
 
+class TimerConfigModal(ModalScreen[Optional[tuple[int, int, str]]]):
+    """Modal para configurar el temporizador."""
+    
+    DEFAULT_CSS = """
+    TimerConfigModal {
+        align: center middle;
+    }
+    
+    TimerConfigModal > Container {
+        width: 50;
+        height: auto;
+        border: thick $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+    
+    TimerConfigModal .modal-title {
+        text-align: center;
+        text-style: bold;
+        width: 100%;
+        margin-bottom: 1;
+    }
+    
+    TimerConfigModal .input-label {
+        margin-top: 1;
+    }
+    
+    TimerConfigModal Input {
+        width: 100%;
+        margin-bottom: 1;
+    }
+    
+    TimerConfigModal .button-row {
+        width: 100%;
+        height: auto;
+        align: center middle;
+        margin-top: 1;
+    }
+    
+    TimerConfigModal Button {
+        margin: 0 1;
+    }
+    """
+    
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancelar", show=False),
+    ]
+    
+    def compose(self) -> ComposeResult:
+        with Container():
+            yield Label("⏲️  Configurar Temporizador", classes="modal-title")
+            yield Label("Minutos:", classes="input-label")
+            yield Input(value="5", id="minutes-input", type="integer", placeholder="Minutos")
+            yield Label("Segundos:", classes="input-label")
+            yield Input(value="0", id="seconds-input", type="integer", placeholder="Segundos")
+            yield Label("Nombre (opcional):", classes="input-label")
+            yield Input(value="", id="name-input", placeholder="Ej: Café, Reunión...")
+            with Horizontal(classes="button-row"):
+                yield Button("Iniciar", variant="primary", id="start")
+                yield Button("Cancelar", variant="default", id="cancel")
+    
+    def on_mount(self) -> None:
+        self.query_one("#minutes-input", Input).focus()
+    
+    @on(Button.Pressed, "#start")
+    def on_start(self) -> None:
+        try:
+            minutes = int(self.query_one("#minutes-input", Input).value or "0")
+            seconds = int(self.query_one("#seconds-input", Input).value or "0")
+            name = self.query_one("#name-input", Input).value.strip()
+            
+            if minutes > 0 or seconds > 0:
+                self.dismiss((minutes, seconds, name))
+            else:
+                self.dismiss(None)
+        except ValueError:
+            self.dismiss(None)
+    
+    @on(Button.Pressed, "#cancel")
+    def on_cancel(self) -> None:
+        self.dismiss(None)
+    
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 class ClockDisplay(Static):
     """Widget para mostrar el reloj en ASCII."""
@@ -461,7 +546,8 @@ class ClockApp(App):
         Binding("1", "mode_clock", "Reloj"),
         Binding("2", "mode_stopwatch", "Cronómetro"),
         Binding("3", "mode_pomodoro", "Pomodoro"),
-        Binding("4", "mode_calendar", "Calendario"),
+        Binding("4", "mode_timer", "Temporizador"),  # CAMBIADO
+        Binding("5", "mode_calendar", "Calendario"),  # CAMBIADO
         Binding("space", "toggle_start", "Iniciar/Pausar"),
         Binding("r", "reset", "Reiniciar"),
         Binding("s", "settings", "Configurar"),
@@ -472,10 +558,11 @@ class ClockApp(App):
     ]
     
     TITLE = "🕐 Clock App"
+    theme = "dracula"
     
     def __init__(self) -> None:
         super().__init__()
-        self.mode = "clock"  # clock, stopwatch, pomodoro, calendar
+        self.mode = "clock"  # clock, stopwatch, pomodoro, calendar, timer
         
         # Cronómetro
         self.stopwatch_running = False
@@ -490,6 +577,14 @@ class ClockApp(App):
         self.pomodoro_is_focus = True  # True = focus, False = break
         self.pomodoro_start_time: Optional[datetime] = None
         self.pomodoro_paused_remaining: Optional[timedelta] = None
+        
+        # Temporizador (NUEVO)
+        self.timer_running = False
+        self.timer_duration = timedelta()
+        self.timer_remaining = timedelta()
+        self.timer_start_time: Optional[datetime] = None
+        self.timer_name = ""
+        self.timer_finished = False
     
     def compose(self) -> ComposeResult:
         yield Header()
@@ -530,6 +625,7 @@ class ClockApp(App):
             ("clock", "🕐 Reloj"),
             ("stopwatch", "⏱️  Cronómetro"),
             ("pomodoro", "🍅 Pomodoro"),
+            ("timer", "⏲️  Temporizador"),  # NUEVO
             ("calendar", "📅 Calendario"),
         ]
         
@@ -559,8 +655,60 @@ class ClockApp(App):
             self.update_stopwatch()
         elif self.mode == "pomodoro":
             self.update_pomodoro()
+        elif self.mode == "timer":  # NUEVO
+            self.update_timer()
         elif self.mode == "calendar":
             self.update_calendar_view()
+    
+    def update_timer(self) -> None:
+        """Actualiza el temporizador."""
+        if self.timer_running and self.timer_start_time:
+            elapsed = datetime.now() - self.timer_start_time
+            remaining = self.timer_remaining - elapsed
+            
+            if remaining.total_seconds() <= 0:
+                # Temporizador terminado
+                remaining = timedelta()
+                self.timer_running = False
+                if not self.timer_finished:
+                    self.timer_finished = True
+                    title = self.timer_name if self.timer_name else "Temporizador"
+                    self.notify("⏰ ¡Tiempo terminado!", title=title, timeout=10)
+        else:
+            remaining = self.timer_remaining
+        
+        # Asegurar que no sea negativo
+        if remaining.total_seconds() < 0:
+            remaining = timedelta()
+        
+        # Formatear tiempo
+        total_seconds = int(remaining.total_seconds())
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        
+        time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        self.clock_display.update_time(time_str)
+        
+        # Actualizar status
+        date_display = self.query_one("#date-display", Static)
+        if self.timer_name:
+            date_display.update(f"⏲️  {self.timer_name}")
+        else:
+            date_display.update("⏲️  Temporizador")
+        
+        status = self.query_one("#status", Static)
+        if self.timer_finished:
+            status.update("🔔 ¡TERMINADO!")
+        elif self.timer_running:
+            status.update("▶️  En marcha")
+        elif self.timer_duration.total_seconds() > 0:
+            status.update("⏸️  Pausado")
+        else:
+            status.update("Pulsa 's' para configurar")
+        
+        pomodoro_status = self.query_one("#pomodoro-status", Static)
+        pomodoro_status.update("")
     
     def update_clock(self) -> None:
         """Actualiza el reloj."""
@@ -683,14 +831,16 @@ class ClockApp(App):
         info_bar = self.query_one("#info-bar", Static)
         
         if self.mode == "clock":
-            info_bar.update("1-4: Cambiar modo | q: Salir")
+            info_bar.update("1-5: Cambiar modo | q: Salir")
         elif self.mode == "stopwatch":
-            info_bar.update("Espacio: Iniciar/Pausar | r: Reiniciar | 1-4: Cambiar modo | q: Salir")
+            info_bar.update("Espacio: Iniciar/Pausar | r: Reiniciar | 1-5: Cambiar modo | q: Salir")
         elif self.mode == "pomodoro":
             info_bar.update(f"Focus: {self.pomodoro_focus_time}min | Descanso: {self.pomodoro_break_time}min | Espacio: Iniciar/Pausar | r: Reiniciar | s: Config | q: Salir")
+        elif self.mode == "timer":
+            info_bar.update("s: Configurar | Espacio: Iniciar/Pausar | r: Reiniciar | 1-5: Cambiar modo | q: Salir")
         elif self.mode == "calendar":
-            info_bar.update("←/→: Cambiar mes | t: Ir a hoy | 1-4: Cambiar modo | q: Salir")
-    
+            info_bar.update("←/→: Cambiar mes | t: Ir a hoy | 1-5: Cambiar modo | q: Salir")
+        
     # Acciones de modo
     async def action_mode_clock(self) -> None:
         """Cambia al modo reloj."""
@@ -716,9 +866,15 @@ class ClockApp(App):
         await self.refresh_tabs()
         self.update_info_bar()
     
+    async def action_mode_timer(self) -> None:
+        """Cambia al modo temporizador."""
+        self.mode = "timer"
+        await self.refresh_tabs()
+        self.update_info_bar()
+    
     # Acciones de control
     def action_toggle_start(self) -> None:
-        """Inicia o pausa el cronómetro/pomodoro."""
+        """Inicia o pausa el cronómetro/pomodoro/temporizador."""
         if self.mode == "stopwatch":
             if self.stopwatch_running:
                 # Pausar
@@ -742,9 +898,26 @@ class ClockApp(App):
                 # Iniciar
                 self.pomodoro_start_time = datetime.now()
                 self.pomodoro_running = True
+        
+        elif self.mode == "timer":  # NUEVO
+            if self.timer_duration.total_seconds() == 0:
+                # No hay temporizador configurado, abrir config
+                self.action_settings()
+            elif self.timer_running:
+                # Pausar
+                if self.timer_start_time:
+                    elapsed = datetime.now() - self.timer_start_time
+                    self.timer_remaining -= elapsed
+                self.timer_start_time = None
+                self.timer_running = False
+            else:
+                # Iniciar
+                self.timer_start_time = datetime.now()
+                self.timer_running = True
+                self.timer_finished = False
     
     def action_reset(self) -> None:
-        """Reinicia el cronómetro/pomodoro."""
+        """Reinicia el cronómetro/pomodoro/temporizador."""
         if self.mode == "stopwatch":
             self.stopwatch_running = False
             self.stopwatch_elapsed = timedelta()
@@ -755,9 +928,15 @@ class ClockApp(App):
             self.pomodoro_is_focus = True
             self.pomodoro_remaining = timedelta(minutes=self.pomodoro_focus_time)
             self.pomodoro_start_time = None
+        
+        elif self.mode == "timer":  # NUEVO
+            self.timer_running = False
+            self.timer_remaining = self.timer_duration
+            self.timer_start_time = None
+            self.timer_finished = False
     
     def action_settings(self) -> None:
-        """Abre la configuración del Pomodoro."""
+        """Abre la configuración del Pomodoro o Temporizador."""
         if self.mode == "pomodoro":
             def on_result(result: Optional[tuple[int, int]]) -> None:
                 if result:
@@ -775,6 +954,19 @@ class ClockApp(App):
                 ConfigModal(self.pomodoro_focus_time, self.pomodoro_break_time),
                 on_result
             )
+        
+        elif self.mode == "timer":  # NUEVO
+            def on_result(result: Optional[tuple[int, int, str]]) -> None:
+                if result:
+                    minutes, seconds, name = result
+                    self.timer_duration = timedelta(minutes=minutes, seconds=seconds)
+                    self.timer_remaining = self.timer_duration
+                    self.timer_name = name
+                    self.timer_running = False
+                    self.timer_start_time = None
+                    self.timer_finished = False
+            
+            self.push_screen(TimerConfigModal(), on_result)
     
     # Acciones de calendario
     def action_prev_month(self) -> None:
